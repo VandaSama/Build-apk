@@ -84,6 +84,7 @@ jobs:
           import android.app.Activity
           import android.content.Context
           import android.content.Intent
+          import android.graphics.Bitmap
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
@@ -95,6 +96,16 @@ jobs:
 
           const val START = "https://m.youtube.com"
           private val OK = Regex("(^|\\.)(youtube\\.com|youtu\\.be|google\\.[a-z.]+|gstatic\\.com|googleusercontent\\.com|ytimg\\.com|googlevideo\\.com)$")
+
+          // Jika video terjeda sendiri (mis. aplikasi lain mengambil audio), putar lagi.
+          // Jeda yang dilakukan pengguna (ada sentuhan <2 dtk sebelumnya) dihormati.
+          private const val JS = "(function(){if(window.__k)return;window.__k=1;var t=0;" +
+              "['touchstart','mousedown','keydown'].forEach(function(e){document.addEventListener(e,function(){t=Date.now()},true)});" +
+              "document.addEventListener('pause',function(e){var v=e.target;if(v.tagName!=='VIDEO'||v.ended||Date.now()-t<2000)return;" +
+              "setTimeout(function(){if(v.paused&&!v.ended&&Date.now()-t>2000){var p=v.play();if(p&&p.catch)p.catch(function(){})}},400)},true);" +
+              "try{Object.defineProperty(document,'hidden',{get:function(){return false}});" +
+              "Object.defineProperty(document,'visibilityState',{get:function(){return 'visible'}})}catch(x){}" +
+              "document.addEventListener('visibilitychange',function(e){e.stopImmediatePropagation()},true)})();"
 
           // WebView bersama (Activity & overlay). Cookie login dibagi otomatis lewat CookieManager.
           @SuppressLint("SetJavaScriptEnabled")
@@ -113,6 +124,8 @@ jobs:
                   // Hanya domain YouTube/Google yang boleh dibuka
                   override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest) =
                       !OK.containsMatchIn(r.url.host ?: "")
+                  override fun onPageStarted(v: WebView, u: String?, f: Bitmap?) { v.evaluateJavascript(JS, null) }
+                  override fun onPageFinished(v: WebView, u: String?) { v.evaluateJavascript(JS, null) }
               }
               w.webChromeClient = WebChromeClient()
               return w
@@ -127,7 +140,10 @@ jobs:
                   val btn = Button(this).apply { text = "▶ Float"; setOnClickListener { float() } }
                   setContentView(FrameLayout(this).apply {
                       addView(web, FrameLayout.LayoutParams(-1, -1))
-                      addView(btn, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply { setMargins(0, 0, 32, 32) })
+                      addView(btn, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
+                          val dp = resources.displayMetrics.density // naikkan tombol agar tidak menutup tab "Anda"/profil
+                          setMargins(0, 0, (16 * dp).toInt(), (96 * dp).toInt())
+                      })
                   })
                   web.loadUrl(intent?.data?.toString() ?: START)
                   if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
