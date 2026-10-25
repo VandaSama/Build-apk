@@ -29,6 +29,12 @@ jobs:
               id("org.jetbrains.kotlin.android") version "1.9.24" apply false
           }
           EOF
+          mkdir -p "$(dirname gradle.properties)"
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          org.gradle.parallel=true
+          kotlin.daemon.jvmargs=-Xmx2g
+          EOF
           mkdir -p "$(dirname app/build.gradle.kts)"
           cat > app/build.gradle.kts <<'EOF'
           plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
@@ -36,6 +42,17 @@ jobs:
               namespace = "com.example.ytfloat"
               compileSdk = 34
               defaultConfig { applicationId = "com.example.ytfloat"; minSdk = 29; targetSdk = 34; versionCode = 1; versionName = "1.0" }
+              flavorDimensions += "clone"
+              productFlavors {
+                  // 10 salinan: id berbeda = data aplikasi (login, cookie) terpisah
+                  for (i in 1..10) {
+                      create("y$i") {
+                          dimension = "clone"
+                          applicationId = "com.example.ytfloat.y$i"
+                          manifestPlaceholders["appLabel"] = "YT$i"
+                      }
+                  }
+              }
               buildTypes { release {
                   isMinifyEnabled = true; isShrinkResources = true
                   proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
@@ -53,21 +70,13 @@ jobs:
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-              <application android:label="YT Float" android:icon="@android:drawable/ic_media_play"
+              <application android:label="${appLabel}" android:icon="@android:drawable/ic_media_play"
                   android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true"
                       android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
-                      </intent-filter>
-                      <intent-filter>
-                          <action android:name="android.intent.action.VIEW"/>
-                          <category android:name="android.intent.category.DEFAULT"/>
-                          <category android:name="android.intent.category.BROWSABLE"/>
-                          <data android:scheme="https" android:host="youtu.be"/>
-                          <data android:scheme="https" android:host="www.youtube.com"/>
-                          <data android:scheme="https" android:host="m.youtube.com"/>
                       </intent-filter>
                   </activity>
                   <service android:name=".FloatService" android:exported="false"
@@ -217,6 +226,7 @@ jobs:
               private lateinit var lp: WindowManager.LayoutParams
               private lateinit var bar: View
               private lateinit var bubble: View
+              private val idx by lazy { packageName.substringAfterLast(".y").toIntOrNull() ?: 0 } // nomor salinan (YT1..YT10)
               private var root: FrameLayout? = null
               private var web: WebView? = null
               private var pw = 0; private var ph = 0; private var bh = 0; private var bs = 0
@@ -242,7 +252,7 @@ jobs:
                       .createNotificationChannel(NotificationChannel("f", "YouTube", NotificationManager.IMPORTANCE_LOW))
                   val stop = PendingIntent.getService(this, 0, Intent(this, FloatService::class.java).setAction("STOP"), PendingIntent.FLAG_IMMUTABLE)
                   val n = Notification.Builder(this, "f").setSmallIcon(android.R.drawable.ic_media_play)
-                      .setContentTitle("YouTube melayang aktif").addAction(android.R.drawable.ic_delete, "Stop", stop).build()
+                      .setContentTitle(if (idx > 0) "YT$idx melayang aktif" else "YouTube melayang aktif").addAction(android.R.drawable.ic_delete, "Stop", stop).build()
                   startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
               }
 
@@ -252,7 +262,10 @@ jobs:
                   bh = (32 * dp).toInt(); bs = (56 * dp).toInt()
                   wm = getSystemService(WindowManager::class.java)
                   lp = WindowManager.LayoutParams(bs, bs, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, BUBBLE, PixelFormat.TRANSLUCENT)
-                      .apply { gravity = Gravity.TOP or Gravity.START; y = d.heightPixels / 4 }
+                      .apply {
+                          gravity = Gravity.TOP or Gravity.START // tiap salinan punya posisi awal sendiri agar bubble tidak menumpuk
+                          y = if (idx > 0) minOf(d.heightPixels / 12 + (idx - 1) * (bs * 1.15f).toInt(), d.heightPixels - bs) else d.heightPixels / 4
+                      }
 
                   val r = object : FrameLayout(this) {
                       override fun dispatchKeyEvent(e: KeyEvent): Boolean {
@@ -271,7 +284,7 @@ jobs:
                       text = t; textSize = 18f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
                       setPadding((14 * dp).toInt(), 0, (14 * dp).toInt(), 0); setOnClickListener { a() }
                   }
-                  val handle = TextView(this).apply { text = "  ⠿ YouTube"; setTextColor(Color.WHITE); gravity = Gravity.CENTER_VERTICAL }
+                  val handle = TextView(this).apply { text = if (idx > 0) "  ⠿ YT$idx" else "  ⠿ YouTube"; setTextColor(Color.WHITE); gravity = Gravity.CENTER_VERTICAL }
                   bar = LinearLayout(this).apply {
                       setBackgroundColor(0xFF202020.toInt()); visibility = View.GONE
                       addView(handle, LinearLayout.LayoutParams(0, -1, 1f))
@@ -280,7 +293,7 @@ jobs:
                   }
                   r.addView(bar, FrameLayout.LayoutParams(-1, bh))
                   bubble = TextView(this).apply {
-                      text = "▶"; textSize = 24f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
+                      text = if (idx > 0) "$idx" else "▶"; textSize = 22f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
                       background = GradientDrawable().apply { setColor(0xFFE62117.toInt()); cornerRadius = 18 * dp }
                   }
                   r.addView(bubble, FrameLayout.LayoutParams(bs, bs))
@@ -328,7 +341,12 @@ jobs:
       - name: Build
         working-directory: yt-float
         run: gradle assembleDebug --no-daemon
+      - name: Kumpulkan APK
+        run: |
+          mkdir out
+          for i in $(seq 1 10); do cp yt-float/app/build/outputs/apk/y$i/debug/app-y$i-debug.apk out/YT$i.apk; done
+          ls -la out
       - uses: actions/upload-artifact@v4
         with:
           name: yt-float-apk
-          path: yt-float/app/build/outputs/apk/debug/app-debug.apk
+          path: out/*.apk
