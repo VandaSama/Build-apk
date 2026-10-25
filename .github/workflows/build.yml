@@ -97,15 +97,34 @@ jobs:
           const val START = "https://m.youtube.com"
           private val OK = Regex("(^|\\.)(youtube\\.com|youtu\\.be|google\\.[a-z.]+|gstatic\\.com|googleusercontent\\.com|ytimg\\.com|googlevideo\\.com)$")
 
-          // Jika video terjeda sendiri (mis. aplikasi lain mengambil audio), putar lagi.
-          // Jeda yang dilakukan pengguna (ada sentuhan <2 dtk sebelumnya) dihormati.
-          private const val JS = "(function(){if(window.__k)return;window.__k=1;var t=0;" +
-              "['touchstart','mousedown','keydown'].forEach(function(e){document.addEventListener(e,function(){t=Date.now()},true)});" +
-              "document.addEventListener('pause',function(e){var v=e.target;if(v.tagName!=='VIDEO'||v.ended||Date.now()-t<2000)return;" +
-              "setTimeout(function(){if(v.paused&&!v.ended&&Date.now()-t>2000){var p=v.play();if(p&&p.catch)p.catch(function(){})}},400)},true);" +
-              "try{Object.defineProperty(document,'hidden',{get:function(){return false}});" +
-              "Object.defineProperty(document,'visibilityState',{get:function(){return 'visible'}})}catch(x){}" +
-              "document.addEventListener('visibilitychange',function(e){e.stopImmediatePropagation()},true)})();"
+          // 1) Jika video terjeda sendiri, putar lagi (jeda dari sentuhan pengguna dihormati).
+          // 2) window.__mix(true): "mode campur" eksperimental. Video dibisukan (tidak minta audio focus
+          //    sehingga tidak dijeda aplikasi lain), suaranya dialirkan lewat Web Audio.
+          private const val JS = """(function(){
+          if(window.__k)return;window.__k=1;
+          var t=0,on=false,ctx=null,src=null,last='';
+          ['touchstart','mousedown','keydown'].forEach(function(e){document.addEventListener(e,function(){t=Date.now()},true)});
+          document.addEventListener('pause',function(e){var v=e.target;if(v.tagName!=='VIDEO'||v.ended||on||Date.now()-t<2000)return;
+          setTimeout(function(){if(v.paused&&!v.ended&&Date.now()-t>2000){var p=v.play();if(p&&p.catch)p.catch(function(){})}},400)},true);
+          try{Object.defineProperty(document,'hidden',{get:function(){return false}});
+          Object.defineProperty(document,'visibilityState',{get:function(){return 'visible'}})}catch(x){}
+          document.addEventListener('visibilitychange',function(e){e.stopImmediatePropagation()},true);
+          function vid(){return document.querySelector('video')}
+          function apply(){
+          var v=vid();if(!on||!v)return 'tidak ada video';
+          if(!v.captureStream)return 'captureStream tidak didukung';
+          var a=v.captureStream().getAudioTracks();
+          if(!a.length)return 'audio belum siap, putar video dulu';
+          if(src&&last===a[0].id){v.muted=true;return 'campur AKTIF'}
+          if(!ctx)ctx=new (window.AudioContext||window.webkitAudioContext)();
+          try{if(src)src.disconnect()}catch(x){}
+          src=ctx.createMediaStreamSource(new MediaStream(a));last=a[0].id;
+          src.connect(ctx.destination);ctx.resume();v.muted=true;return 'campur AKTIF'}
+          document.addEventListener('volumechange',function(e){if(on&&e.target.tagName==='VIDEO'&&!e.target.muted)e.target.muted=true},true);
+          document.addEventListener('playing',function(e){if(on&&e.target.tagName==='VIDEO')setTimeout(apply,300)},true);
+          window.__mix=function(o){on=o;if(on)return apply();
+          try{if(src)src.disconnect()}catch(x){}src=null;last='';var v=vid();if(v)v.muted=false;return 'campur MATI'};
+          })();"""
 
           // WebView bersama (Activity & overlay). Cookie login dibagi otomatis lewat CookieManager.
           @SuppressLint("SetJavaScriptEnabled")
@@ -187,6 +206,8 @@ jobs:
               private lateinit var lp: WindowManager.LayoutParams
               private lateinit var bar: View
               private lateinit var bubble: View
+              private lateinit var mixBtn: TextView
+              private var mix = false
               private var root: FrameLayout? = null
               private var web: WebView? = null
               private var pw = 0; private var ph = 0; private var bh = 0; private var bs = 0
@@ -241,10 +262,12 @@ jobs:
                       text = t; textSize = 18f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
                       setPadding((14 * dp).toInt(), 0, (14 * dp).toInt(), 0); setOnClickListener { a() }
                   }
+                  mixBtn = btn("🔀") { toggleMix() }
                   val handle = TextView(this).apply { text = "  ⠿ YouTube"; setTextColor(Color.WHITE); gravity = Gravity.CENTER_VERTICAL }
                   bar = LinearLayout(this).apply {
                       setBackgroundColor(0xFF202020.toInt()); visibility = View.GONE
                       addView(handle, LinearLayout.LayoutParams(0, -1, 1f))
+                      addView(mixBtn, LinearLayout.LayoutParams(-2, -1))
                       addView(btn("—") { setOpen(false) }, LinearLayout.LayoutParams(-2, -1))
                       addView(btn("✕") { stopSelf() }, LinearLayout.LayoutParams(-2, -1))
                   }
@@ -258,6 +281,15 @@ jobs:
                   drag(bubble) { setOpen(true) }
                   drag(handle, null)
                   wm.addView(r, lp)
+              }
+
+              // Mode campur (eksperimental): video tetap jalan walau aplikasi lain memutar suara
+              private fun toggleMix() {
+                  mix = !mix
+                  mixBtn.setTextColor(if (mix) 0xFF4CAF50.toInt() else Color.WHITE)
+                  web?.evaluateJavascript("window.__mix&&window.__mix($mix)") { r ->
+                      Toast.makeText(this, r?.trim('"') ?: "?", Toast.LENGTH_SHORT).show()
+                  }
               }
 
               private fun setOpen(o: Boolean) {
